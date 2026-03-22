@@ -115,16 +115,32 @@ with col1:
 
     else:
         file = st.file_uploader("Upload Receipt", type=["jpg", "png", "jpeg"])
-        if file and st.button("Analyze Screenshot") and agent_executor:
+       # --- IN YOUR BUTTON LOGIC ---
+if st.button("Analyze Screenshot") and agent_executor:
+    with st.spinner("Checking local cache..."):
+        raw_text = ocr_tool(file)
+        
+        # 1. TRY LOCAL EXTRACTION FIRST (No API Cost)
+        local_result = expense_tool(raw_text)
+        
+        if "Recorded" in local_result:
+            st.success(f"✅ Local Logic: {local_result}")
+            # Only call Gemini for the 'Guru Advice' part to save quota
             try:
-                raw_text = ocr_tool(file)
-                # Clean text of weird characters before sending to Gemini
-                clean_text = "".join(i for i in raw_text if ord(i) < 128)
-                res = agent_executor.invoke({"input": f"Use Analyzer on this text: {clean_text}"})
+                # Optional: Only call Gemini if you really want advice
+                # res = agent_executor.invoke({"input": "Give me one line of guru advice."})
+                # st.info(res["output"])
+                st.rerun()
+            except Exception:
+                st.warning("Guru is sleeping (Quota full), but your expense was saved locally!")
+        else:
+            # 2. ONLY CALL GEMINI IF LOCAL LOGIC FAILS
+            try:
+                res = agent_executor.invoke({"input": f"Use Analyzer on: {raw_text}"})
                 st.success(res["output"])
                 st.rerun()
             except Exception as e:
-                st.error(f"Analysis Error: {e}")
+                st.error("API Limit Reached. Please try Manual Entry for now.")
 
 with col2:
     st.subheader("📊 Spending Analysis")
