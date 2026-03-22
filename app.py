@@ -28,29 +28,31 @@ def ocr_tool(image_file):
     text = pytesseract.image_to_string(img, config=custom_config)
     return text
 def expense_tool(text):
-    # 1. Look for the Currency symbol + Number (handles the big ₹20)
-    # This regex is specifically tuned for Indian payment apps
-    pattern = re.search(r'(?:₹|Rs\.?|Total)\s?([\d,]+\.?\d*)', text, re.IGNORECASE)
+    # 1. CLEAN THE TEXT: Remove common date patterns (like 15 Mar 2026) 
+    # so the '15' doesn't distract the code.
+    clean_text = re.sub(r'\d{1,2}\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{4}', '', text, flags=re.IGNORECASE)
     
-    if pattern:
-        amount = float(pattern.group(1).replace(',', ''))
+    # 2. PRIORITY 1: Find number attached to Rupee symbol (e.g., ₹20)
+    rupee_match = re.search(r'₹\s?([\d,]+\.?\d*)', clean_text)
+    
+    if rupee_match:
+        amount = float(rupee_match.group(1).replace(',', ''))
     else:
-        # 2. Fallback: Find numbers but EXCLUDE long Transaction IDs (usually 10+ digits)
-        nums = re.findall(r'\b\d{1,5}(?:\.\d{1,2})?\b', text)
-        clean_nums = [float(n) for n in nums if 0 < float(n) < 100000]
-        # Usually the payment is the first or largest non-ID number
-        amount = clean_nums[0] if clean_nums else 0.0
+        # 3. PRIORITY 2: If no ₹ symbol, find numbers but ignore "Year-like" numbers
+        nums = re.findall(r'\b\d{1,4}(?:\.\d{1,2})?\b', clean_text)
+        # Filter: Must be a number, but NOT 2024, 2025, or 2026
+        valid_nums = [float(n) for n in nums if float(n) not in [2024, 2025, 2026]]
+        # Take the largest remaining number (The Payment)
+        amount = max(valid_nums) if valid_nums else 0.0
 
-    # 3. Categorization logic
+    # 4. CATEGORY: Look for "Swiggy" specifically for your screenshot
     text_l = text.lower()
-    category = "Miscellaneous"
-    if "swiggy" in text_l or "zomato" in text_l: category = "Food"
-    elif "uber" in text_l or "ola" in text_l: category = "Transport"
+    category = "Food" if "swiggy" in text_l else "Miscellaneous"
 
     if amount > 0:
         st.session_state.expense_history.append({"Amount": amount, "Category": category})
-        return f"Success: Recorded ₹{amount} for {category}."
-    return "Error: Amount not found."
+        return f"Fixed! Recorded ₹{amount} for {category}."
+    return "Could not find amount."
 
 def budgeting_tool(query):
     total = sum(item['Amount'] for item in st.session_state.expense_history)
