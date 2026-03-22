@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import base64
+import time
 from datetime import date
 from io import BytesIO
 from PIL import Image
@@ -81,16 +82,28 @@ def resize_image(image_bytes: bytes, max_size: int = 1024) -> tuple[bytes, str]:
     return buf.getvalue(), mime
 
 
+def validate_api_key(api_key: str) -> bool:
+    """Quick text-only ping to confirm the key works before sending image."""
+    try:
+        genai.configure(api_key=api_key)
+        m = genai.GenerativeModel("gemini-2.0-flash-lite")
+        m.generate_content("Say OK")
+        return True
+    except Exception:
+        return False
+
+
 def extract_expenses_from_screenshot(image_bytes: bytes, mime_type: str) -> list[dict]:
     """
     Sends UPI / bank screenshot to Gemini Vision using the native SDK.
+    Retries up to 3 times with backoff on quota errors.
     Returns a list of dicts: {Date, Amount, Category, Source}
     """
     if not st.session_state.api_key:
         st.error("⚠️ Please enter your Gemini API key in the sidebar.")
         st.stop()
 
-    # Resize image to avoid ResourceExhausted / token limit errors
+    # Resize image to avoid token limit issues
     image_bytes, mime_type = resize_image(image_bytes)
 
     genai.configure(api_key=st.session_state.api_key)
@@ -110,19 +123,41 @@ def extract_expenses_from_screenshot(image_bytes: bytes, mime_type: str) -> list
     [{"Date": "2024-06-01", "Amount": 120.0, "Category": "Food", "Source": "Screenshot"}]
     """
 
-    try:
-        image_part = {"mime_type": mime_type, "data": image_bytes}
-        response = model.generate_content([image_part, prompt])
-        raw = response.text.strip()
-    except Exception as e:
-        err = str(e)
-        if "ResourceExhausted" in err or "429" in err:
-            st.error("⚠️ Gemini API quota exceeded. Wait a minute and try again, or check your API key quota at aistudio.google.com.")
-        elif "API_KEY_INVALID" in err or "401" in err:
-            st.error("⚠️ Invalid API key. Please check the key you entered in the sidebar.")
-        else:
-            st.error(f"⚠️ Gemini error: {err}")
-        return []
+    image_part = {"mime_type": mime_type, "data": image_bytes}
+
+    # Retry up to 3 times with exponential backoff on quota errors
+    for attempt in range(3):
+        try:
+            response = model.generate_content([image_part, prompt])
+            raw = response.text.strip()
+            break  # success — exit retry loop
+        except Exception as e:
+            err = str(e)
+            if "ResourceExhausted" in err or "429" in err:
+                if attempt < 2:
+                    wait = 15 * (attempt + 1)  # 15s, 30s
+                    st.warning(f"⏳ Rate limit hit — retrying in {wait} seconds... (attempt {attempt + 1}/3)")
+                    time.sleep(wait)
+                    continue
+                else:
+                    st.error(
+                        "⚠️ Quota exhausted after 3 retries.\n\n"
+                        "**Likely cause:** Too many requests today on this API key.\n\n"
+                        "**Fix options:**\n"
+                        "1. Wait 24 hours for quota reset\n"
+                        "2. Create a **new Google account** → new API key at aistudio.google.com\n"
+                        "3. Enable billing on your Google Cloud project for higher limits"
+                    )
+                    return []
+            elif "API_KEY_INVALID" in err or "401" in err:
+                st.error("⚠️ Invalid API key. Check the key in the sidebar.")
+                return []
+            elif "NotFound" in err or "404" in err:
+                st.error("⚠️ Model not found. Check your Google Cloud region or API key permissions.")
+                return []
+            else:
+                st.error(f"⚠️ Unexpected error: {err}")
+                return []
 
     # Strip accidental markdown fences
     if raw.startswith("```"):
