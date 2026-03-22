@@ -58,7 +58,7 @@ def get_llm():
         st.error("⚠️ Please enter your Gemini API key in the sidebar.")
         st.stop()
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-2.0-flash",
         google_api_key=st.session_state.api_key
     )
 
@@ -77,7 +77,7 @@ def extract_expenses_from_screenshot(image_bytes: bytes, mime_type: str) -> list
 
     # Use native google-generativeai SDK — most reliable for vision tasks
     genai.configure(api_key=st.session_state.api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash")
 
     prompt = """
     You are an expense extraction assistant. Look at this payment/UPI/bank screenshot.
