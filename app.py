@@ -25,17 +25,27 @@ def ocr_tool(image_file):
     return pytesseract.image_to_string(img, config=custom_config)
 
 def expense_tool(text):
-    """Extracts amount/category. Now handles raw numbers like '4000'."""
-    # 1. Look for currency patterns (₹500, Paid 500, etc.)
-    amount_match = re.search(r'(?:₹|Rs\.?|Paid|Total|Spent)\s?([\d,]+\.?\d*)', text, re.IGNORECASE)
+    # 1. Look for numbers specifically tied to currency symbols first
+    currency_pattern = re.findall(r'(?:₹|Rs\.?|Paid|Total)\s?([\d,]+\.?\d*)', text, re.IGNORECASE)
     
-    if amount_match:
-        amount = float(amount_match.group(1).replace(',', ''))
+    if currency_pattern:
+        # Take the most recent/relevant one
+        amount = float(currency_pattern[-1].replace(',', ''))
     else:
-        # 2. FALLBACK: Grab the first valid number if no keywords exist
-        nums = re.findall(r'[\d,]+\.?\d*', text)
-        valid_nums = [float(n.replace(',', '')) for n in nums if len(n.replace(',', '').split('.')[0]) < 7]
-        amount = valid_nums[0] if valid_nums else 0.0
+        # 2. Find ALL numbers and filter out weird ones (like 2026 or IDs)
+        all_nums = re.findall(r'[\d,]+\.?\d*', text)
+        clean_nums = []
+        for n in all_nums:
+            val = float(n.replace(',', ''))
+            # Ignore numbers that look like years or long IDs (> 6 digits)
+            if 0 < val < 999999 and len(n.split('.')[0]) < 7:
+                clean_nums.append(val)
+        
+        # 3. Use the HIGHEST value found (usually the payment amount)
+        amount = max(clean_nums) if clean_nums else 0.0
+
+    # Categorize and Save...
+    # (Rest of your existing code)
 
     # 3. Flexible Categorization
     text_l = text.lower()
