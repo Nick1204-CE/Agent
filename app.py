@@ -9,39 +9,34 @@ if 'expense_history' not in st.session_state:
     st.session_state.expense_history = []
 
 def ocr_tool(image_file):
-    """Enhanced Pre-processing for Dark-Mode Screenshots (Google Pay)."""
     img = Image.open(image_file)
-    img = ImageOps.grayscale(img)
-    # Invert helps Tesseract read white text on dark backgrounds
-    img = ImageOps.invert(img) 
-    img = ImageOps.autocontrast(img)
-    return pytesseract.image_to_string(img, config='--oem 3 --psm 6')
+    width, height = img.size
+    
+    # CROP the image to only the top 40% 
+    # This removes the bank details, dates, and times at the bottom!
+    top_half = img.crop((0, 0, width, int(height * 0.4)))
+    
+    # Pre-process the cropped area
+    top_half = ImageOps.grayscale(top_half)
+    top_half = ImageOps.invert(top_half)
+    top_half = ImageOps.autocontrast(top_half)
+    
+    return pytesseract.image_to_string(top_half, config='--oem 3 --psm 6')
 
 def expense_tool(text):
-    # 1. THE RUPEE SNIPER: Focus only on digits immediately next to a ₹ symbol
-    # This ignores dates, times, and account numbers.
-    rupee_pattern = re.search(r'₹\s?(\d+)', text)
+    # Now that we've cropped the '15' out of the image, 
+    # we just need to find the number next to the ₹
+    match = re.search(r'(?:₹|Rs\.?)\s?(\d+)', text)
     
-    if rupee_pattern:
-        amount = float(rupee_pattern.group(1))
+    if match:
+        amount = float(match.group(1))
     else:
-        # 2. THE CLEANER: If no ₹, remove times (11:13) and years (2026) manually
-        # This removes HH:MM patterns
-        clean_text = re.sub(r'\d{1,2}:\d{2}', '', text)
-        # This removes 4-digit bank/year numbers
-        clean_text = re.sub(r'\b\d{4}\b', '', clean_text)
-        
-        # 3. Grab the first remaining number
-        nums = re.findall(r'\b\d{1,3}\b', clean_text)
+        # Fallback for raw numbers in the top section
+        nums = re.findall(r'\b\d{1,4}\b', text)
         amount = float(nums[0]) if nums else 0.0
-
-    # 4. CATEGORY LOGIC
+        
     category = "Food" if "swiggy" in text.lower() else "Miscellaneous"
-
-    if amount > 0:
-        return amount, category
-    return 0.0, "Unknown"
-
+    return amount, category
 # --- UI ---
 st.set_page_config(page_title="AI Finance Agent", layout="wide")
 st.title("💰 AI Personal Finance Agent")
