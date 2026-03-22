@@ -1,83 +1,82 @@
 import streamlit as st
 import pandas as pd
-import base64
 import os
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 
-# --- 1. PERSISTENCE LAYER (Real-World Applied) ---
-DB_FILE = "my_expenses.csv"
+# --- PERSISTENCE (Track A Requirement) ---
+DB_FILE = "expense_database.csv"
 
-def load_data():
-    if os.path.exists(DB_FILE):
-        return pd.read_csv(DB_FILE)
-    return pd.DataFrame(columns=["Date", "Amount", "Category"])
+def save_data(df):
+    df.to_csv(DB_FILE, index=False)
 
 if 'ledger' not in st.session_state:
-    st.session_state.ledger = load_data()
+    if os.path.exists(DB_FILE):
+        st.session_state.ledger = pd.read_csv(DB_FILE)
+    else:
+        st.session_state.ledger = pd.DataFrame(columns=["Date", "Amount", "Category", "Source"])
 
-# --- 2. THE VISION ENGINE (Fixes the ValueError) ---
-def process_with_vision(image_file, api_key):
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)
+# --- WEEK 3-4: GURU ADVICE ENGINE ---
+def get_financial_advice(user_data, guru_principles=""):
+    """
+    Analyzes spending patterns based on financial philosophies (Track A Goal).
+    [cite: 35, 99]
+    """
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=st.session_state.api_key)
     
-    encoded = base64.b64encode(image_file.getvalue()).decode()
+    summary = user_data.groupby('Category')['Amount'].sum().to_dict()
     
-    # This specific structure is required to avoid ValueErrors
-    message = HumanMessage(
-        content=[
-            {"type": "text", "text": "Identify the total payment amount and category. Return ONLY JSON like {'amount': 20.0, 'category': 'Food'}"},
-            {
-                "type": "image_url",
-                "url": f"data:image/jpeg;base64,{encoded}", # Note: url key inside image_url
-            },
-        ]
-    )
-    
-    response = llm.invoke([message])
+    prompt = f"""
+    As a financial advisor, analyze this spending: {summary}.
+    Apply these principles: {guru_principles if guru_principles else '50/30/20 Rule'}.
+    Give 2-3 specific, actionable tips for an Indian college student.
+    """
+    response = llm.invoke(prompt)
     return response.content
 
-# --- 3. THE INTERFACE ---
-st.set_page_config(page_title="Pro Finance Agent", page_icon="💳")
-st.title("💳 Real-World Finance Agent")
+# --- UI LAYOUT ---
+st.set_page_config(page_title="Personal Finance Agent", layout="wide")
+st.title("🚀 Financial Advisor & Expense Manager")
 
+# Sidebar for API Key and Guru Knowledge
 with st.sidebar:
-    key = st.text_input("Gemini API Key", type="password")
-    if not st.session_state.ledger.empty:
-        total = st.session_state.ledger["Amount"].sum()
-        st.metric("Total Monthly Spend", f"₹{total}")
-
-uploaded_file = st.file_uploader("Upload Receipt", type=["png", "jpg", "jpeg"])
-
-if uploaded_file and key:
-    st.image(uploaded_file, width=250)
-    
-    if st.button("Analyze Receipt"):
-        try:
-            # Gemini Vision sees the '20' and ignores the '15' or '7895'
-            raw_res = process_with_vision(uploaded_file, key)
-            st.info(f"AI Detected: {raw_res}")
-            
-            # Form for user to verify (Essential for real-world accuracy)
-            with st.form("confirmation"):
-                # You can manually set these if the JSON parsing fails
-                final_amt = st.number_input("Confirm Amount", step=1.0)
-                final_cat = st.selectbox("Category", ["Food", "Transport", "Shopping", "Misc"])
-                
-                if st.form_submit_button("Save to Ledger"):
-                    new_row = pd.DataFrame([{
-                        "Date": pd.Timestamp.now().strftime("%Y-%m-%d"),
-                        "Amount": final_amt,
-                        "Category": final_cat
-                    }])
-                    st.session_state.ledger = pd.concat([st.session_state.ledger, new_row], ignore_index=True)
-                    st.session_state.ledger.to_csv(DB_FILE, index=False)
-                    st.success("Transaction Synced!")
-                    st.rerun()
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-# --- 4. DATA VISUALS ---
-if not st.session_state.ledger.empty:
+    st.session_state.api_key = st.text_input("Enter API Key", type="password")
     st.divider()
-    st.subheader("Your Spending History")
-    st.dataframe(st.session_state.ledger, use_container_width=True)
+    st.subheader("📚 Guru Knowledge Base")
+    guru_text = st.text_area("Paste Financial Principles (e.g., from Rich Dad Poor Dad)", 
+                             help="Week 3-4: Multi-source content integration ")
+
+# --- WEEK 3-4: MULTI-SOURCE TABS ---
+tab1, tab2, tab3 = st.tabs(["📸 Screenshot", "⌨️ Manual Entry", "📊 Dashboard & Advice"])
+
+with tab1:
+    uploaded_file = st.file_uploader("Upload UPI Screenshot", type=["png", "jpg"])
+    # (Insert your existing Vision processing logic here)
+
+with tab2:
+    st.subheader("Manual Expense Entry ")
+    with st.form("manual_form"):
+        col1, col2 = st.columns(2)
+        m_amt = col1.number_input("Amount (₹)", min_value=0.0)
+        m_cat = col2.selectbox("Category", ["Food", "Transport", "Fees", "Shopping", "Misc"])
+        m_date = st.date_input("Transaction Date")
+        if st.form_submit_button("Add Expense"):
+            new_entry = pd.DataFrame([{"Date": m_date, "Amount": m_amt, "Category": m_cat, "Source": "Manual"}])
+            st.session_state.ledger = pd.concat([st.session_state.ledger, new_entry], ignore_index=True)
+            save_data(st.session_state.ledger)
+            st.success("Manual entry saved!")
+
+with tab3:
+    if not st.session_state.ledger.empty:
+        # --- WEEK 4: VISUALIZATION ---
+        st.subheader("Spending Pattern Analysis ")
+        chart_data = st.session_state.ledger.groupby("Category")["Amount"].sum()
+        st.bar_chart(chart_data)
+        
+        # --- WEEK 4: ADVICE MILESTONE ---
+        if st.button("Generate AI Financial Advice [cite: 103]"):
+            with st.spinner("Analyzing your habits..."):
+                advice = get_financial_advice(st.session_state.ledger, guru_text)
+                st.markdown(f"### 💡 Personalized Advice\n{advice}")
+    else:
+        st.info("Add some expenses to see your financial health score.")
