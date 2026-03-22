@@ -3,6 +3,8 @@ import pandas as pd
 import os
 import base64
 from datetime import date
+from io import BytesIO
+from PIL import Image
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 import google.generativeai as genai
@@ -66,6 +68,19 @@ def get_llm():
 # ─────────────────────────────────────────────
 # FEATURE 1 — SCREENSHOT VISION EXTRACTION
 # ─────────────────────────────────────────────
+def resize_image(image_bytes: bytes, max_size: int = 1024) -> tuple[bytes, str]:
+    """Resize image so longest side <= max_size to stay within token limits."""
+    img = Image.open(BytesIO(image_bytes))
+    img.thumbnail((max_size, max_size), Image.LANCZOS)
+    buf = BytesIO()
+    fmt = img.format or "JPEG"
+    if fmt not in ("JPEG", "PNG"):
+        fmt = "JPEG"
+    img.save(buf, format=fmt)
+    mime = "image/png" if fmt == "PNG" else "image/jpeg"
+    return buf.getvalue(), mime
+
+
 def extract_expenses_from_screenshot(image_bytes: bytes, mime_type: str) -> list[dict]:
     """
     Sends UPI / bank screenshot to Gemini Vision using the native SDK.
@@ -75,7 +90,9 @@ def extract_expenses_from_screenshot(image_bytes: bytes, mime_type: str) -> list
         st.error("⚠️ Please enter your Gemini API key in the sidebar.")
         st.stop()
 
-    # Use native google-generativeai SDK — most reliable for vision tasks
+    # Resize image to avoid ResourceExhausted / token limit errors
+    image_bytes, mime_type = resize_image(image_bytes)
+
     genai.configure(api_key=st.session_state.api_key)
     model = genai.GenerativeModel("gemini-2.0-flash")
 
@@ -93,9 +110,19 @@ def extract_expenses_from_screenshot(image_bytes: bytes, mime_type: str) -> list
     [{"Date": "2024-06-01", "Amount": 120.0, "Category": "Food", "Source": "Screenshot"}]
     """
 
-    image_part = {"mime_type": mime_type, "data": image_bytes}
-    response = model.generate_content([image_part, prompt])
-    raw = response.text.strip()
+    try:
+        image_part = {"mime_type": mime_type, "data": image_bytes}
+        response = model.generate_content([image_part, prompt])
+        raw = response.text.strip()
+    except Exception as e:
+        err = str(e)
+        if "ResourceExhausted" in err or "429" in err:
+            st.error("⚠️ Gemini API quota exceeded. Wait a minute and try again, or check your API key quota at aistudio.google.com.")
+        elif "API_KEY_INVALID" in err or "401" in err:
+            st.error("⚠️ Invalid API key. Please check the key you entered in the sidebar.")
+        else:
+            st.error(f"⚠️ Gemini error: {err}")
+        return []
 
     # Strip accidental markdown fences
     if raw.startswith("```"):
@@ -105,7 +132,7 @@ def extract_expenses_from_screenshot(image_bytes: bytes, mime_type: str) -> list
     raw = raw.strip()
 
     try:
-        extracted = eval(raw)   # safe here — we control the prompt tightly
+        extracted = eval(raw)
         if isinstance(extracted, list):
             return extracted
     except Exception:
