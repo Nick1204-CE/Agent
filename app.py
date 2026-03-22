@@ -3,10 +3,8 @@ import pytesseract
 from PIL import Image, ImageOps
 import re
 import pandas as pd
-
-# --- MODERN 2026 IMPORTS ---
+from langchain_google_genai import ChatGoogleGenerativeAI, HarmCategory, HarmBlockThreshold
 from langsmith import Client
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_classic.agents import AgentExecutor, create_react_agent
 from langchain_core.tools import Tool
 
@@ -25,52 +23,45 @@ def ocr_tool(image_file):
     return pytesseract.image_to_string(img, config=custom_config)
 
 def expense_tool(text):
-    # 1. Look for numbers specifically tied to currency symbols first
-    currency_pattern = re.findall(r'(?:₹|Rs\.?|Paid|Total)\s?([\d,]+\.?\d*)', text, re.IGNORECASE)
+    """Extracts amount/category. Robust against raw numbers and distractions."""
+    # 1. Look for currency patterns first
+    amount_match = re.search(r'(?:₹|Rs\.?|Paid|Total|Spent)\s?([\d,]+\.?\d*)', text, re.IGNORECASE)
     
-    if currency_pattern:
-        # Take the most recent/relevant one
-        amount = float(currency_pattern[-1].replace(',', ''))
+    if amount_match:
+        amount = float(amount_match.group(1).replace(',', ''))
     else:
-        # 2. Find ALL numbers and filter out weird ones (like 2026 or IDs)
-        all_nums = re.findall(r'[\d,]+\.?\d*', text)
-        clean_nums = []
-        for n in all_nums:
-            val = float(n.replace(',', ''))
-            # Ignore numbers that look like years or long IDs (> 6 digits)
-            if 0 < val < 999999 and len(n.split('.')[0]) < 7:
-                clean_nums.append(val)
-        
-        # 3. Use the HIGHEST value found (usually the payment amount)
-        amount = max(clean_nums) if clean_nums else 0.0
+        # 2. FALLBACK: Find the largest valid number (likely the transaction)
+        nums = re.findall(r'[\d,]+\.?\d*', text)
+        valid_nums = [float(n.replace(',', '')) for n in nums if 0 < float(n.replace(',', '')) < 1000000 and len(n.split('.')[0]) < 7]
+        amount = max(valid_nums) if valid_nums else 0.0
 
-    # Categorize and Save...
-    # (Rest of your existing code)
-
-    # 3. Flexible Categorization
+    # 3. Categorization
     text_l = text.lower()
     category = "Miscellaneous"
-    if any(k in text_l for k in ["swiggy", "zomato", "food", "dinner", "eat"]): category = "Food"
-    elif any(k in text_l for k in ["uber", "ola", "petrol", "ride"]): category = "Transport"
-    elif any(k in text_l for k in ["amazon", "flipkart", "shop", "buy"]): category = "Shopping"
+    if any(k in text_l for k in ["swiggy", "zomato", "food", "dinner", "eat", "blinkit"]): category = "Food"
+    elif any(k in text_l for k in ["uber", "ola", "petrol", "ride", "fuel"]): category = "Transport"
+    elif any(k in text_l for k in ["amazon", "flipkart", "shop", "buy", "myntra"]): category = "Shopping"
 
     if amount > 0:
         st.session_state.expense_history.append({"Amount": amount, "Category": category})
         return f"Recorded ₹{amount} under {category}."
-    
-    return "Error: Could not find a numeric value."
+    return "Error: Could not identify a valid transaction amount."
 
 def budgeting_tool(query):
     total = sum(item['Amount'] for item in st.session_state.expense_history)
-    if total > 10000: return f"⚠️ Spending high: ₹{total}!"
-    return f"✅ Budget OK: ₹{total} spent."
+    if total > 5000: return f"⚠️ Spending alert: ₹{total} used. Tighten the belt!"
+    return f"✅ Budget OK: ₹{total} spent so far."
 
 def guru_advice_tool(query):
-    if not st.session_state.expense_history: return "Save first, spend later!"
+    if not st.session_state.expense_history: return "Start tracking to get wisdom!"
     df = pd.DataFrame(st.session_state.expense_history)
     top_cat = df.groupby("Category")["Amount"].sum().idxmax()
-    quotes = {"Food": "🍱 Limit the Swiggy orders!", "Shopping": "🛍️ Assets > Things.", "Transport": "🚗 Watch the fuel burn."}
-    return quotes.get(top_cat, "Track every rupee.")
+    quotes = {
+        "Food": "🍱 'Don't save $3 on lattes; focus on the Big Wins.' — Ramit Sethi",
+        "Shopping": "🛍️ 'Wealth is assets that earn while you sleep.' — Naval Ravikant",
+        "Transport": "🚗 Keep your fixed costs low for maximum freedom."
+    }
+    return quotes.get(top_cat, "Do not save what is left after spending. — Buffett")
 
 # --- UI SETUP ---
 st.set_page_config(page_title="AI Finance Agent", page_icon="💰", layout="wide")
@@ -80,63 +71,93 @@ with st.sidebar:
     gemini_key = st.text_input("Enter Gemini API Key", type="password")
     if st.session_state.expense_history:
         total_val = sum(item['Amount'] for item in st.session_state.expense_history)
-        st.metric("Total Spend", f"₹{total_val}")
-        st.progress(min(int(total_val/200), 100))
+        st.metric("Total Monthly Spend", f"₹{total_val:,.2f}")
+        health_score = max(0, 100 - int(total_val / 100))
+        st.write(f"**Financial Health: {health_score}/100**")
+        st.progress(health_score)
+
+agent_executor = None
 
 if gemini_key:
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", google_api_key=gemini_key, temperature=0)
+        # RELAXED SAFETY SETTINGS to prevent ClientError
+        safety_cfg = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash", # Using stable 1.5-flash
+            google_api_key=gemini_key,
+            temperature=0,
+            safety_settings=safety_cfg
+        )
+
         tools = [
-            Tool(name="OCR", func=ocr_tool, description="Extracts text from images."),
-            Tool(name="Analyzer", func=expense_tool, description="Extracts amount/category and SAVES to history."),
-            Tool(name="Budgeting", func=budgeting_tool, description="Checks total spending."),
-            Tool(name="Guru", func=guru_advice_tool, description="Gives financial advice.")
+            Tool(name="OCR", func=ocr_tool, description="Extracts raw text from images."),
+            Tool(name="Analyzer", func=expense_tool, description="Extracts amount/category and saves it."),
+            Tool(name="Budgeting", func=budgeting_tool, description="Checks total spend history."),
+            Tool(name="Guru", func=guru_advice_tool, description="Provides dynamic wealth advice.")
         ]
+
         client = Client()
         prompt = client.pull_prompt("hwchase17/react")
-        agent_executor = AgentExecutor(agent=create_react_agent(llm, tools, prompt), tools=tools, verbose=True, handle_parsing_errors=True)
+        agent_executor = AgentExecutor(
+            agent=create_react_agent(llm, tools, prompt),
+            tools=tools,
+            verbose=True,
+            handle_parsing_errors=True
+        )
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Initialization Error: {e}")
 
 # --- DASHBOARD ---
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    mode = st.radio("Input Mode", ["Manual Entry", "Screenshot"])
+    mode = st.radio("Input Method", ["Manual Entry", "Screenshot"])
     
     if mode == "Manual Entry":
-        user_input = st.text_input("Enter amount or description (e.g. 4000)")
-        if st.button("Add Entry"):
-            # We tell the agent to be smart about raw numbers
-            res = agent_executor.invoke({"input": f"Analyze '{user_input}'. If it's just a number, record it and ask me what it's for."})
-            st.success(res["output"])
-            st.rerun()
+        user_input = st.text_input("Enter amount or detail (e.g. 20 for chai)")
+        if st.button("Add Entry") and agent_executor:
+            with st.spinner("Processing..."):
+                res = agent_executor.invoke({"input": f"Analyze '{user_input}'. Extract amount, save it, and check my budget."})
+                st.success(res["output"])
+                st.rerun()
 
     else:
         file = st.file_uploader("Upload Receipt", type=["jpg", "png", "jpeg"])
-        if file and st.button("Scan Receipt"):
-            text = ocr_tool(file)
-            res = agent_executor.invoke({"input": f"Analyze this text: '{text}'. Save it and give Guru advice."})
-            st.write(res["output"])
-            st.rerun()
+        if file and st.button("Analyze Screenshot") and agent_executor:
+            with st.spinner("Agent is reading image..."):
+                text = ocr_tool(file)
+                res = agent_executor.invoke({"input": f"Analyze this text: '{text}'. Save it and give Guru advice."})
+                st.success(res["output"])
+                st.rerun()
 
-    # --- RECENT LOG ---
     if st.session_state.expense_history:
         st.subheader("📝 Recent Transactions")
-        st.table(pd.DataFrame(st.session_state.expense_history).tail(5))
+        df_log = pd.DataFrame(st.session_state.expense_history).tail(5)
+        st.table(df_log)
 
 with col2:
-    st.subheader("📊 Spending Analysis")
+    st.subheader("📊 Spending Trends")
     if st.session_state.expense_history:
         df = pd.DataFrame(st.session_state.expense_history)
         chart_data = df.groupby("Category")["Amount"].sum().reset_index()
-        st.bar_chart(chart_data.set_index("Category"))
         
-        if st.button("Clear All Data"):
+        # Color chart red if total spending is high
+        total_now = chart_data["Amount"].sum()
+        color = "#FF4B4B" if total_now > 5000 else "#1F77B4"
+        
+        st.bar_chart(chart_data.set_index("Category"), color=color)
+        
+        if st.button("Clear History"):
             st.session_state.expense_history = []
             st.rerun()
     else:
-        st.info("Start adding expenses to see the magic! ✨")
+        st.info("No data yet. Let's start tracking!")
 
 st.divider()
-st.caption("2026 AI Finance Agent | Built with Streamlit & Gemini")
+st.caption("AI Finance Agent v2.0 | Built with LangChain & Gemini 1.5")
