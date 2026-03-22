@@ -1,6 +1,9 @@
 streamlit
-langchain-google-genai>=4.0.0
-langsmith
-langchain-classic
 pytesseract
-pillow
+Pillow
+opencv-python-headless
+pandas
+langsmith
+langchain-google-genai>=4.2.1
+langchain-core
+langchain-classic
