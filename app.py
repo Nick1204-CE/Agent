@@ -88,7 +88,11 @@ def extract_expenses_from_screenshot(image_bytes: bytes, mime_type: str) -> list
     """
 
     message = HumanMessage(content=[
-        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}},
+        {
+            "type": "media",
+            "mime_type": mime_type,
+            "data": b64,
+        },
         {"type": "text", "text": prompt}
     ])
 
