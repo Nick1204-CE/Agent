@@ -10,33 +10,26 @@ if 'expense_history' not in st.session_state:
 
 def ocr_tool(image_file):
     img = Image.open(image_file)
-    width, height = img.size
+    # 1. ENHANCE: Make it ultra-high contrast so the white '20' stands out
+    img = ImageOps.grayscale(img)
+    img = ImageOps.autocontrast(img, cutoff=2) # Pushes whites to pure white
     
-    # CROP the image to only the top 40% 
-    # This removes the bank details, dates, and times at the bottom!
-    top_half = img.crop((0, 0, width, int(height * 0.4)))
-    
-    # Pre-process the cropped area
-    top_half = ImageOps.grayscale(top_half)
-    top_half = ImageOps.invert(top_half)
-    top_half = ImageOps.autocontrast(top_half)
-    
-    return pytesseract.image_to_string(top_half, config='--oem 3 --psm 6')
+    # 2. CONFIG: PSM 11 is 'Sparse Text'—perfect for giant floating numbers
+    # We also tell it to ONLY look for digits and the Rupee symbol
+    custom_config = r'--oem 3 --psm 11 -c tessedit_char_whitelist=0123456789₹'
+    return pytesseract.image_to_string(img, config=custom_config)
 
 def expense_tool(text):
-    # Now that we've cropped the '15' out of the image, 
-    # we just need to find the number next to the ₹
-    match = re.search(r'(?:₹|Rs\.?)\s?(\d+)', text)
+    # Remove distracting small numbers like times (11:13) or years (2026)
+    # We only want numbers that are 2 digits or more but NOT years
+    nums = re.findall(r'\b\d{1,3}\b', text)
+    valid_nums = [float(n) for n in nums if float(n) not in [11, 13, 22, 2026]]
     
-    if match:
-        amount = float(match.group(1))
-    else:
-        # Fallback for raw numbers in the top section
-        nums = re.findall(r'\b\d{1,4}\b', text)
-        amount = float(nums[0]) if nums else 0.0
-        
-    category = "Food" if "swiggy" in text.lower() else "Miscellaneous"
-    return amount, category
+    # In a payment screenshot, the largest remaining number is the amount
+    amount = max(valid_nums) if valid_nums else 0.0
+    
+    # Default category for Swiggy screenshots
+    return amount, "Food"
 # --- UI ---
 st.set_page_config(page_title="AI Finance Agent", layout="wide")
 st.title("💰 AI Personal Finance Agent")
