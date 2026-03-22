@@ -7,3 +7,4 @@ langsmith
 langchain-google-genai>=4.2.1
 langchain-core
 langchain-classic
+google-generativeai
