@@ -5,6 +5,7 @@ import base64
 from datetime import date
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
+import google.generativeai as genai
 
 # ─────────────────────────────────────────────
 # PERSISTENCE
@@ -67,11 +68,16 @@ def get_llm():
 # ─────────────────────────────────────────────
 def extract_expenses_from_screenshot(image_bytes: bytes, mime_type: str) -> list[dict]:
     """
-    Sends UPI / bank screenshot to Gemini Vision.
+    Sends UPI / bank screenshot to Gemini Vision using the native SDK.
     Returns a list of dicts: {Date, Amount, Category, Source}
     """
-    llm = get_llm()
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    if not st.session_state.api_key:
+        st.error("⚠️ Please enter your Gemini API key in the sidebar.")
+        st.stop()
+
+    # Use native google-generativeai SDK — most reliable for vision tasks
+    genai.configure(api_key=st.session_state.api_key)
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt = """
     You are an expense extraction assistant. Look at this payment/UPI/bank screenshot.
@@ -87,17 +93,9 @@ def extract_expenses_from_screenshot(image_bytes: bytes, mime_type: str) -> list
     [{"Date": "2024-06-01", "Amount": 120.0, "Category": "Food", "Source": "Screenshot"}]
     """
 
-    message = HumanMessage(content=[
-        {
-            "type": "media",
-            "mime_type": mime_type,
-            "data": b64,
-        },
-        {"type": "text", "text": prompt}
-    ])
-
-    response = llm.invoke([message])
-    raw = response.content.strip()
+    image_part = {"mime_type": mime_type, "data": image_bytes}
+    response = model.generate_content([image_part, prompt])
+    raw = response.text.strip()
 
     # Strip accidental markdown fences
     if raw.startswith("```"):
