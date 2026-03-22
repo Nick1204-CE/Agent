@@ -8,10 +8,32 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 # In a real app, this would be a SQL Database or Google Sheets API
 if 'ledger' not in st.session_state:
     st.session_state.ledger = pd.DataFrame(columns=["Date", "Amount", "Category", "Note"])
+from langchain_core.messages import HumanMessage # Add this import
 
 def process_with_vision(image_file, api_key):
-    """Sends the image to Gemini Vision for high-accuracy extraction."""
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)
+    """Sends the image to Gemini Vision with the correct message format."""
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash", 
+        google_api_key=api_key,
+        temperature=0
+    )
+    
+    # Convert image to base64
+    encoded = base64.b64encode(image_file.getvalue()).decode()
+    
+    # CORRECT FORMAT: Wrap the parts in a HumanMessage object
+    message = HumanMessage(
+        content=[
+            {"type": "text", "text": "Extract the payment amount and category from this image. Return ONLY JSON: {'amount': float, 'category': str}"},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{encoded}"},
+            },
+        ]
+    )
+    
+    response = llm.invoke([message])
+    return response.content
     
     # Convert image to base64 for the API
     encoded = base64.b64encode(image_file.getvalue()).decode()
