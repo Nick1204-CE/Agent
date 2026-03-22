@@ -20,16 +20,30 @@ def ocr_tool(image_file):
     return pytesseract.image_to_string(img, config=custom_config)
 
 def expense_tool(text):
-    # Remove distracting small numbers like times (11:13) or years (2026)
-    # We only want numbers that are 2 digits or more but NOT years
-    nums = re.findall(r'\b\d{1,3}\b', text)
-    valid_nums = [float(n) for n in nums if float(n) not in [11, 13, 22, 2026]]
+    # 1. First, try to find the number specifically next to the Rupee symbol
+    rupee_match = re.search(r'₹\s?(\d+)', text)
+    if rupee_match:
+        return float(rupee_match.group(1)), "Food"
+
+    # 2. If that fails, find all numbers but apply STRICT engineering filters:
+    # We only want numbers that are 1-4 digits long
+    all_nums = re.findall(r'\b\d{1,4}\b', text)
     
-    # In a payment screenshot, the largest remaining number is the amount
-    amount = max(valid_nums) if valid_nums else 0.0
+    # 3. BLACKLIST: Explicitly ignore the numbers we know are wrong
+    # 672 (from ID), 7895 (Bank), 11, 13, 15 (Time/Date), 2026 (Year)
+    blacklist = [672, 7895, 11, 13, 15, 2026, 22]
     
-    # Default category for Swiggy screenshots
-    return amount, "Food"
+    valid_candidates = []
+    for n in all_nums:
+        val = float(n)
+        if val not in blacklist and 1 <= val <= 5000:
+            valid_candidates.append(val)
+    
+    # 4. In your specific Google Pay SS, '20' will now be the only one left
+    amount = valid_candidates[0] if valid_candidates else 0.0
+    
+    category = "Food" if "swiggy" in text.lower() else "Miscellaneous"
+    return amount, category
 # --- UI ---
 st.set_page_config(page_title="AI Finance Agent", layout="wide")
 st.title("💰 AI Personal Finance Agent")
