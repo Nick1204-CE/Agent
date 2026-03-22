@@ -1,8 +1,9 @@
 import streamlit as st
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageOps
 import re
 import pandas as pd
+import io
 
 # --- MODERN 2026 IMPORTS ---
 from langsmith import Client
@@ -10,157 +11,163 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_classic.agents import AgentExecutor, create_react_agent
 from langchain_core.tools import Tool
 
-# --- FINANCE TOOLS ---
+# --- GLOBAL MEMORY INITIALIZATION ---
+if 'expense_history' not in st.session_state:
+    st.session_state.expense_history = []
+
+# --- IMPROVED TOOLS ---
+
 def ocr_tool(image_file):
+    """Processes image for better OCR and extracts text."""
     img = Image.open(image_file)
-    return pytesseract.image_to_string(img)
+    # Pre-processing: Grayscale + Contrast boost
+    img = ImageOps.grayscale(img)
+    img = ImageOps.autocontrast(img)
+    
+    # Whitelist numbers and common currency characters for better accuracy
+    custom_config = r'--oem 3 --psm 6'
+    text = pytesseract.image_to_string(img, config=custom_config)
+    return text
 
 def expense_tool(text):
-    amount_match = re.search(r'\d+', text)
-    amount = amount_match.group() if amount_match else "Unknown"
+    """Extracts amount and category, then saves to session memory."""
+    # Improved Regex for UPI/Banking (matches ₹500, Rs. 500, Paid 500)
+    amount_match = re.search(r'(?:₹|Rs\.?|Paid|Total)\s?([\d,]+\.?\d*)', text)
     
+    if amount_match:
+        amount = float(amount_match.group(1).replace(',', ''))
+    else:
+        # Fallback: Find the largest number (usually the amount)
+        nums = [float(n.replace(',', '')) for n in re.findall(r'[\d,]+\.\d+', text)]
+        amount = max(nums) if nums else 0.0
+
     text_lower = text.lower()
-    if any(k in text_lower for k in ["swiggy", "zomato", "food", "blinkit"]):
-        category = "Food/Groceries"
-    elif any(k in text_lower for k in ["uber", "ola", "rapido", "petrol"]):
+    if any(k in text_lower for k in ["swiggy", "zomato", "food", "blinkit", "restaurant"]):
+        category = "Food"
+    elif any(k in text_lower for k in ["uber", "ola", "rapido", "petrol", "fuel"]):
         category = "Transport"
+    elif any(k in text_lower for k in ["amazon", "flipkart", "myntra", "mall", "shopping"]):
+        category = "Shopping"
     else:
         category = "Miscellaneous"
 
-    return f"Amount: ₹{amount}, Category: {category}"
+    # Save to Session State if a valid amount was found
+    if amount > 0:
+        st.session_state.expense_history.append({"Amount": amount, "Category": category})
+        return f"Success! Recorded ₹{amount} for {category}."
+    
+    return "Could not find a clear amount. Please try manual entry."
 
-def advice_tool(category):
-    return "Great tracking! Small savings today lead to big wealth tomorrow."
-
-# --------- NEW FEATURES ---------
-
-def budgeting_tool(total):
-    total = int(total)
-
+def budgeting_tool(query):
+    """Calculates burn rate based on total history."""
+    history = st.session_state.expense_history
+    if not history:
+        return "No spending data found yet."
+    
+    total = sum(item['Amount'] for item in history)
     if total > 10000:
-        return "⚠️ You are overspending!"
+        return f"⚠️ Total spend: ₹{total}. You are overspending!"
     elif total > 5000:
-        return "⚠️ You are near your budget limit."
-    else:
-        return "✅ Your spending is under control."
+        return f"⚠️ Total spend: ₹{total}. You are near your budget limit."
+    return f"✅ Total spend: ₹{total}. Your spending is under control."
 
-def guru_advice_tool(category):
-    guru = {
-        "Food": "Warren Buffett: Save before you spend.",
-        "Shopping": "Ramit Sethi: Spend consciously.",
-        "Transport": "Avoid unnecessary expenses.",
-        "Others": "Track every rupee."
+def guru_advice_tool(query):
+    """Provides dynamic advice based on the highest spending category."""
+    history = st.session_state.expense_history
+    if not history:
+        return "Warren Buffett: 'Save before you spend.' Start by scanning a receipt!"
+
+    df = pd.DataFrame(history)
+    top_cat = df.groupby("Category")["Amount"].sum().idxmax()
+    
+    gurus = {
+        "Food": "🍱 High food spend? Ramit Sethi says: 'Focus on Big Wins, but stop ghost-spending on apps.'",
+        "Shopping": "🛍️ Naval Ravikant: 'Wealth is assets that earn while you sleep, not things that clutter your room.'",
+        "Transport": "🚗 Keep your burn rate low to maintain your freedom.",
+        "Miscellaneous": "💰 'Do not save what is left after spending...' — Warren Buffett"
     }
-    return guru.get(category, "Invest wisely.")
+    return gurus.get(top_cat, "Invest wisely.")
 
 # --- UI SETUP ---
-st.set_page_config(page_title="AI Finance Agent", page_icon="💰")
-st.title("💰 AI Finance Agent")
+st.set_page_config(page_title="AI Finance Agent", page_icon="💰", layout="wide")
+st.title("💰 AI Personal Finance Agent")
 
-gemini_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
+with st.sidebar:
+    st.header("Settings")
+    gemini_key = st.text_input("Enter Gemini API Key", type="password")
+    st.divider()
+    
+    # Financial Health Meter
+    if st.session_state.expense_history:
+        total_all = sum(item['Amount'] for item in st.session_state.expense_history)
+        st.metric("Total Monthly Spend", f"₹{total_all}")
+        score = max(0, 100 - int(total_all / 200))
+        st.write(f"**Financial Health: {score}/100**")
+        st.progress(score)
+
 agent_executor = None
 
-if not gemini_key:
-    st.info("Please enter your Gemini API Key in the sidebar.", icon="🗝️")
-else:
+if gemini_key:
     try:
-        # 1. Initialize Gemini
         llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash-lite", 
             google_api_key=gemini_key,
-            temperature=0,
-            max_retries=6,  # AUTO-RETRY ON 429 ERRORS
-            timeout=60
+            temperature=0
         )
 
-
-
-        # 2. Define Tools
         tools = [
-            Tool(name="OCR", func=ocr_tool, description="Extracts text from images."),
-            Tool(name="Analyzer", func=expense_tool, description="Finds amount and category."),
-            Tool(name="Advisor", func=advice_tool, description="Provides advice."),
-            Tool(name="Budget Tool", func=budgeting_tool, description="Gives budgeting advice"),
-            Tool(name="Guru Advice", func=guru_advice_tool, description="Financial guru advice")
+            Tool(name="OCR", func=ocr_tool, description="Extracts raw text from receipt images."),
+            Tool(name="Analyzer", func=expense_tool, description="Extracts amount/category and SAVES to history."),
+            Tool(name="Budgeting", func=budgeting_tool, description="Checks total spending history."),
+            Tool(name="Guru", func=guru_advice_tool, description="Gives advice based on spending leaks.")
         ]
 
-        # 3. Setup Agent
         client = Client()
         prompt = client.pull_prompt("hwchase17/react")
-
         agent = create_react_agent(llm, tools, prompt)
-
-        agent_executor = AgentExecutor(
-            agent=agent,
-            tools=tools,
-            verbose=True,
-            handle_parsing_errors=True,
-            max_iterations=5
-        )
-
+        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
     except Exception as e:
-        st.error(f"Initialization Error: {e}")
+        st.error(f"Setup Error: {e}")
 
-# ---------------- MAIN UI ----------------
+# --- MAIN DASHBOARD ---
+col1, col2 = st.columns([1, 1])
 
-option = st.selectbox(
-    "Select Input Type",
-    ["Screenshot", "Manual Entry", "CSV Upload"]
-)
+with col1:
+    option = st.selectbox("Input Method", ["Screenshot", "Manual Entry"])
 
-# -------- SCREENSHOT --------
-if option == "Screenshot":
-    uploaded_file = st.file_uploader("Upload Screenshot", type=["jpg", "png", "jpeg"])
+    if option == "Screenshot":
+        uploaded_file = st.file_uploader("Upload Receipt", type=["jpg", "png", "jpeg"])
+        if uploaded_file and agent_executor:
+            st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
+            if st.button("Process & Save"):
+                with st.spinner("Agent is analyzing..."):
+                    text = ocr_tool(uploaded_file)
+                    # We pass clear instructions to the agent
+                    res = agent_executor.invoke({"input": f"Analyze this text: '{text}'. Extract amount, save it, and then give me Guru advice."})
+                    st.success(res["output"])
 
-    if uploaded_file and agent_executor:
-        st.image(uploaded_file, use_container_width=True)
+    else:
+        user_input = st.text_input("Describe expense (e.g., 'Paid 500 for dinner')")
+        if st.button("Add Entry") and agent_executor:
+            res = agent_executor.invoke({"input": f"Analyze: '{user_input}'. Save it and check my budget."})
+            st.success(res["output"])
 
-        if st.button("Analyze Now"):
-            with st.spinner("Processing..."):
-                try:
-                    extracted_text = ocr_tool(uploaded_file)
+with col2:
+    st.subheader("📊 Spending Overview")
+    if st.session_state.expense_history:
+        df = pd.DataFrame(st.session_state.expense_history)
+        chart_data = df.groupby("Category")["Amount"].sum().reset_index()
+        st.bar_chart(chart_data.set_index("Category"))
+        
+        # Download Data
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("Download CSV Report", data=csv, file_name="expenses.csv", mime="text/csv")
+        
+        if st.button("Clear History"):
+            st.session_state.expense_history = []
+            st.rerun()
+    else:
+        st.info("No data yet. Upload a screenshot to see your breakdown.")
 
-                    result = agent_executor.invoke({
-                        "input": f"Analyze this receipt text: '{extracted_text}'. Get amount, category, and advice."
-                    })
-
-                    st.success("### Analysis Result")
-                    st.write(result["output"])
-
-                except Exception as e:
-                    st.error(f"Execution Error: {e}")
-
-# -------- MANUAL ENTRY --------
-elif option == "Manual Entry":
-    user_input = st.text_input("Enter expense (e.g., Paid ₹300 to Swiggy)")
-
-    if user_input and agent_executor:
-        try:
-            result = agent_executor.invoke({
-                "input": f"Analyze this text: '{user_input}'"
-            })
-            st.write(result["output"])
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-# -------- CSV --------
-elif option == "CSV Upload":
-    csv_file = st.file_uploader("Upload CSV", type=["csv"])
-
-    if csv_file:
-        df = pd.read_csv(csv_file)
-        st.write("Uploaded Data:", df)
-
-        if "Amount" in df.columns:
-            total = df["Amount"].sum()
-            st.write("Total Spending:", total)
-            st.write("Budget Advice:", budgeting_tool(total))
-
-# -------- CHART --------
-sample_data = pd.DataFrame({
-    "Category": ["Food", "Shopping", "Transport"],
-    "Amount": [2000, 1500, 1000]
-})
-
-st.subheader("📊 Spending Overview")
-st.bar_chart(sample_data.set_index("Category"))
+st.divider()
+st.caption("Powered by Gemini 2.5 Flash-Lite & LangChain-Classic")
