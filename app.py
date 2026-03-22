@@ -16,33 +16,41 @@ if 'expense_history' not in st.session_state:
 
 def ocr_tool(image_file):
     img = Image.open(image_file)
+    # Convert to Grayscale
     img = ImageOps.grayscale(img)
+    # INVERT colors (Black text on White background is better for OCR)
+    img = ImageOps.invert(img)
+    # Boost contrast to make the large "20" pop
     img = ImageOps.autocontrast(img)
-    # Basic config to help Tesseract focus
-    return pytesseract.image_to_string(img, config='--oem 3 --psm 6')
-
-def expense_tool(text):
-    # Regex for currency/amount patterns
-    amount_match = re.search(r'(?:₹|Rs\.?|Paid|Total|Spent)\s?([\d,]+\.?\d*)', text, re.IGNORECASE)
     
-    if amount_match:
-        amount = float(amount_match.group(1).replace(',', ''))
+    # Use PSM 6 (Assume a uniform block of text) or PSM 11 (Find sparse text)
+    custom_config = r'--oem 3 --psm 6'
+    text = pytesseract.image_to_string(img, config=custom_config)
+    return text
+def expense_tool(text):
+    # 1. Look for the Currency symbol + Number (handles the big ₹20)
+    # This regex is specifically tuned for Indian payment apps
+    pattern = re.search(r'(?:₹|Rs\.?|Total)\s?([\d,]+\.?\d*)', text, re.IGNORECASE)
+    
+    if pattern:
+        amount = float(pattern.group(1).replace(',', ''))
     else:
-        # Fallback: Find the largest number
-        nums = re.findall(r'[\d,]+\.?\d*', text)
-        valid_nums = [float(n.replace(',', '')) for n in nums if 0 < float(n.replace(',', '')) < 1000000 and len(n.split('.')[0]) < 7]
-        amount = max(valid_nums) if valid_nums else 0.0
+        # 2. Fallback: Find numbers but EXCLUDE long Transaction IDs (usually 10+ digits)
+        nums = re.findall(r'\b\d{1,5}(?:\.\d{1,2})?\b', text)
+        clean_nums = [float(n) for n in nums if 0 < float(n) < 100000]
+        # Usually the payment is the first or largest non-ID number
+        amount = clean_nums[0] if clean_nums else 0.0
 
+    # 3. Categorization logic
     text_l = text.lower()
     category = "Miscellaneous"
-    if any(k in text_l for k in ["swiggy", "zomato", "food", "blinkit"]): category = "Food"
-    elif any(k in text_l for k in ["uber", "ola", "petrol", "fuel"]): category = "Transport"
-    elif any(k in text_l for k in ["amazon", "flipkart", "shop", "myntra"]): category = "Shopping"
+    if "swiggy" in text_l or "zomato" in text_l: category = "Food"
+    elif "uber" in text_l or "ola" in text_l: category = "Transport"
 
     if amount > 0:
         st.session_state.expense_history.append({"Amount": amount, "Category": category})
-        return f"Stored ₹{amount} in {category}."
-    return "Error: Could not extract amount."
+        return f"Success: Recorded ₹{amount} for {category}."
+    return "Error: Amount not found."
 
 def budgeting_tool(query):
     total = sum(item['Amount'] for item in st.session_state.expense_history)
