@@ -18,25 +18,24 @@ def ocr_tool(image_file):
     return pytesseract.image_to_string(img, config='--oem 3 --psm 6')
 
 def expense_tool(text):
-    """The 'Financial Filter' Logic."""
-    # 1. REMOVE NOISE: Delete Account Numbers, Dates, and IDs so they don't distract
-    # Removes 4-digit bank suffixes (like 7895) and years
-    clean_text = re.sub(r'\b\d{4,}\b', '', text) 
-    # Removes dates (like 15 Mar 2026)
-    clean_text = re.sub(r'\d{1,2}\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', '', clean_text, flags=re.IGNORECASE)
-
-    # 2. TARGET THE RUPEE: Look for the number immediately following '₹'
-    # We use a more aggressive search for the symbol itself
-    rupee_search = re.search(r'(?:₹|Rs\.?)\s?(\d+)', text)
+    # 1. THE RUPEE SNIPER: Focus only on digits immediately next to a ₹ symbol
+    # This ignores dates, times, and account numbers.
+    rupee_pattern = re.search(r'₹\s?(\d+)', text)
     
-    if rupee_search:
-        amount = float(rupee_search.group(1))
+    if rupee_pattern:
+        amount = float(rupee_pattern.group(1))
     else:
-        # Fallback: Find the first small number that isn't a date or account ID
+        # 2. THE CLEANER: If no ₹, remove times (11:13) and years (2026) manually
+        # This removes HH:MM patterns
+        clean_text = re.sub(r'\d{1,2}:\d{2}', '', text)
+        # This removes 4-digit bank/year numbers
+        clean_text = re.sub(r'\b\d{4}\b', '', clean_text)
+        
+        # 3. Grab the first remaining number
         nums = re.findall(r'\b\d{1,3}\b', clean_text)
         amount = float(nums[0]) if nums else 0.0
 
-    # 3. SMART CATEGORY: Find 'Swiggy' or 'Zomato'
+    # 4. CATEGORY LOGIC
     category = "Food" if "swiggy" in text.lower() else "Miscellaneous"
 
     if amount > 0:
